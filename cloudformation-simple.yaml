@@ -61,6 +61,7 @@ Resources:
   # ==================== NETWORKING ====================
   AlgoTraderVPC:
     Type: AWS::EC2::VPC
+    DeletionPolicy: Delete
     Properties:
       CidrBlock: 10.0.0.0/16
       EnableDnsHostnames: true
@@ -71,6 +72,7 @@ Resources:
 
   PublicSubnet:
     Type: AWS::EC2::Subnet
+    DeletionPolicy: Delete
     Properties:
       VpcId: !Ref AlgoTraderVPC
       CidrBlock: 10.0.1.0/24
@@ -79,20 +81,24 @@ Resources:
 
   InternetGateway:
     Type: AWS::EC2::InternetGateway
+    DeletionPolicy: Delete
 
   AttachGateway:
     Type: AWS::EC2::VPCGatewayAttachment
+    DeletionPolicy: Delete
     Properties:
       VpcId: !Ref AlgoTraderVPC
       InternetGatewayId: !Ref InternetGateway
 
   PublicRouteTable:
     Type: AWS::EC2::RouteTable
+    DeletionPolicy: Delete
     Properties:
       VpcId: !Ref AlgoTraderVPC
 
   PublicRoute:
     Type: AWS::EC2::Route
+    DeletionPolicy: Delete
     DependsOn: AttachGateway
     Properties:
       RouteTableId: !Ref PublicRouteTable
@@ -101,6 +107,7 @@ Resources:
 
   SubnetRouteTableAssociation:
     Type: AWS::EC2::SubnetRouteTableAssociation
+    DeletionPolicy: Delete
     Properties:
       SubnetId: !Ref PublicSubnet
       RouteTableId: !Ref PublicRouteTable
@@ -108,6 +115,7 @@ Resources:
   # ==================== SECURITY ====================
   AlgoTraderSecurityGroup:
     Type: AWS::EC2::SecurityGroup
+    DeletionPolicy: Delete
     Properties:
       GroupDescription: Security group for Algo Trader
       VpcId: !Ref AlgoTraderVPC
@@ -140,6 +148,7 @@ Resources:
   # ==================== IAM ====================
   EC2Role:
     Type: AWS::IAM::Role
+    DeletionPolicy: Delete
     Properties:
       AssumeRolePolicyDocument:
         Version: '2012-10-17'
@@ -165,6 +174,7 @@ Resources:
 
   EC2InstanceProfile:
     Type: AWS::IAM::InstanceProfile
+    DeletionPolicy: Delete
     Properties:
       Roles:
         - !Ref EC2Role
@@ -172,6 +182,7 @@ Resources:
   # ==================== EC2 INSTANCE ====================
   AlgoTraderInstance:
     Type: AWS::EC2::Instance
+    DeletionPolicy: Delete
     Properties:
       ImageId: !Sub 'resolve:ssm:/aws/service/canonical/ubuntu/server/22.04/stable/current/amd64/hvm/ebs-gp3/ami-id'
       InstanceType: !Ref InstanceType
@@ -286,6 +297,7 @@ Resources:
   # ==================== CLOUDWATCH LOGS ====================
   AlgoTraderLogGroup:
     Type: AWS::Logs::LogGroup
+    DeletionPolicy: Retain
     Properties:
       LogGroupName: /algo-trader/deployment
       RetentionInDays: 30
