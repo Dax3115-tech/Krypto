@@ -1,0 +1,476 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Algo Trader — S&D Dashboard</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.7.2/socket.io.js"></script>
+<script src="https://cdn.plot.ly/plotly-2.27.0.min.js"></script>
+<style>
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#0f1117;color:#f0f1f5;font-size:14px}
+  header{background:#1a1d23;border-bottom:1px solid #2d3139;padding:0 1.5rem;display:flex;align-items:center;justify-content:space-between;height:56px;position:sticky;top:0;z-index:100}
+  .brand{font-size:16px;font-weight:600;display:flex;align-items:center;gap:8px}
+  .live-dot{width:8px;height:8px;border-radius:50%;background:#1f9d6f;animation:pulse 2s infinite}
+  @keyframes pulse{0%,100%{opacity:1}50%{opacity:.4}}
+  .status-bar{font-size:12px;color:#828695}
+  main{max-width:1400px;margin:0 auto;padding:1.25rem}
+  .metrics{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;margin-bottom:1.25rem}
+  .metric{background:#1e2029;border:1px solid #333644;border-radius:10px;padding:.9rem 1rem}
+  .metric-label{font-size:11px;color:#828695;text-transform:uppercase;letter-spacing:.05em;margin-bottom:3px}
+  .metric-val{font-size:20px;font-weight:600}
+  .up{color:#3dd38e} .down{color:#ff6b63} .neutral{color:#f0f1f5}
+  .grid{display:grid;grid-template-columns:1fr 340px;gap:1rem;margin-bottom:1rem}
+  .card{background:#1e2029;border:1px solid #333644;border-radius:10px;padding:1.25rem}
+  .card-title{font-size:12px;font-weight:600;color:#828695;text-transform:uppercase;letter-spacing:.05em;margin-bottom:1rem;display:flex;justify-content:space-between;align-items:center}
+  .symbol-tabs{display:flex;gap:6px;margin-bottom:1rem}
+  .sym-tab{padding:5px 14px;border-radius:99px;border:1px solid #333644;background:transparent;color:#828695;font-size:12px;font-weight:600;cursor:pointer}
+  .sym-tab.active{background:#1e3a5f;color:#7fb8ff;border-color:#378ADD}
+  #chartDiv{height:460px;border-radius:8px;overflow:hidden}
+  .controls{display:flex;gap:8px;margin-bottom:1.25rem;flex-wrap:wrap}
+  .btn{padding:8px 16px;border-radius:8px;border:1px solid #454857;background:#262834;color:#f0f1f5;font-size:13px;font-weight:500;cursor:pointer}
+  .btn:hover{background:#333644}
+  .btn-danger{border-color:#ff6b63;color:#ff6b63}
+  .btn-danger:hover{background:#3a1d1c}
+  .btn-warning{border-color:#f0c349;color:#f0c349}
+  .btn-warning:hover{background:#3a2f12}
+  .btn-success{border-color:#3dd38e;color:#3dd38e}
+  .btn-success:hover{background:#0a2e20}
+  .halted-banner{background:#3a1d1c;border:1px solid #ff6b63;border-radius:8px;padding:10px 14px;color:#ff6b63;font-weight:500;margin-bottom:1rem;display:none}
+  table{width:100%;border-collapse:collapse;font-size:12px}
+  th{font-size:10px;color:#828695;text-transform:uppercase;letter-spacing:.04em;padding:5px 0;border-bottom:1px solid #333644;text-align:left;font-weight:500}
+  td{padding:8px 0;border-bottom:1px solid #1e2029;vertical-align:middle}
+  tr:last-child td{border-bottom:none}
+  .zone-badge{display:inline-block;padding:2px 7px;border-radius:99px;font-size:10px;font-weight:600}
+  .zone-demand{background:#1a1035;color:#c084fc;border:1px solid #7c3aed}
+  .zone-supply{background:#2d1f00;color:#fbbf24;border:1px solid #d97706}
+  .zone-hit{background:#262834;color:#828695;border:1px solid #454857}
+  .price-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(110px,1fr));gap:8px;margin-bottom:1rem}
+  .price-tile{background:#262834;border-radius:8px;padding:9px 12px}
+  .price-symbol{font-size:11px;color:#828695;font-weight:600}
+  .price-val{font-size:17px;font-weight:600;margin-top:2px}
+  .legend{display:flex;gap:16px;margin-bottom:10px;font-size:12px;color:#828695;flex-wrap:wrap}
+  .legend-item{display:flex;align-items:center;gap:6px}
+  .legend-box{width:16px;height:10px;border-radius:2px;border:1px solid}
+  .bottom-grid{display:grid;grid-template-columns:1fr 1fr;gap:1rem;margin-top:1rem}
+  @media(max-width:900px){.grid{grid-template-columns:1fr}.bottom-grid{grid-template-columns:1fr}}
+</style>
+</head>
+<body>
+
+<header>
+  <div class="brand">
+    <div class="live-dot"></div>
+    📊 S&D Algo Trader
+  </div>
+  <div class="status-bar" id="statusBar">Connecting...</div>
+</header>
+
+<main>
+  <div class="halted-banner" id="haltedBanner">
+    ⚠️ Trading Halted — <span id="haltReason"></span>
+  </div>
+
+  <div class="controls">
+    <button class="btn btn-danger"   onclick="haltTrading()">🛑 Halt Trading</button>
+    <button class="btn btn-success"  onclick="resumeTrading()">▶ Resume</button>
+    <button class="btn btn-warning"  onclick="liquidateAll()">⚡ Liquidate All</button>
+    <button class="btn"              onclick="refreshChart()">🔄 Refresh Chart</button>
+  </div>
+
+  <div class="metrics" id="metrics">
+    <div class="metric"><div class="metric-label">Portfolio Value</div><div class="metric-val neutral" id="m-equity">—</div></div>
+    <div class="metric"><div class="metric-label">Cash</div><div class="metric-val neutral" id="m-cash">—</div></div>
+    <div class="metric"><div class="metric-label">Today P&L</div><div class="metric-val neutral" id="m-pnl">—</div></div>
+    <div class="metric"><div class="metric-label">Unrealized</div><div class="metric-val neutral" id="m-unrealized">—</div></div>
+    <div class="metric"><div class="metric-label">Open Positions</div><div class="metric-val neutral" id="m-positions">—</div></div>
+    <div class="metric"><div class="metric-label">Trades Today</div><div class="metric-val neutral" id="m-trades">—</div></div>
+    <div class="metric"><div class="metric-label">Active Demand</div><div class="metric-val up" id="m-demand">—</div></div>
+    <div class="metric"><div class="metric-label">Active Supply</div><div class="metric-val down" id="m-supply">—</div></div>
+  </div>
+
+  <!-- Symbol tabs + Chart -->
+  <div class="card" style="margin-bottom:1rem">
+    <div class="card-title">
+      <span>Candlestick Chart with S&D Zones</span>
+      <div style="display:flex;align-items:center;gap:8px">
+        <select id="timeframeSelect" onchange="refreshChart()" style="background:#262834;color:#f0f1f5;border:1px solid #454857;border-radius:6px;padding:4px 8px;font-size:12px">
+          <option value="1Min">1 min</option>
+          <option value="5Min">5 min</option>
+          <option value="15Min">15 min</option>
+          <option value="1Hour">1 hour</option>
+          <option value="1Day">Daily</option>
+        </select>
+        <select id="barsSelect" onchange="refreshChart()" style="background:#262834;color:#f0f1f5;border:1px solid #454857;border-radius:6px;padding:4px 8px;font-size:12px">
+          <option value="60">60 bars</option>
+          <option value="100" selected>100 bars</option>
+          <option value="200">200 bars</option>
+          <option value="400">400 bars</option>
+        </select>
+      </div>
+    </div>
+
+    <div class="symbol-tabs" id="symbolTabs"></div>
+
+    <div class="legend">
+      <div class="legend-item"><div class="legend-box" style="background:#1a1035;border-color:#7c3aed"></div>Demand zone (active)</div>
+      <div class="legend-item"><div class="legend-box" style="background:#7c3aed44;border-color:#7c3aed;opacity:0.4"></div>Demand zone (hit)</div>
+      <div class="legend-item"><div class="legend-box" style="background:#2d1f00;border-color:#d97706"></div>Supply zone (active)</div>
+      <div class="legend-item"><div class="legend-box" style="background:#d9770644;border-color:#d97706;opacity:0.4"></div>Supply zone (hit)</div>
+      <div class="legend-item"><div style="width:20px;height:2px;background:#c084fc"></div>S1 demand level</div>
+      <div class="legend-item"><div style="width:20px;height:2px;background:#fbbf24"></div>S1 supply level</div>
+    </div>
+
+    <div id="chartDiv"><div style="display:flex;align-items:center;justify-content:center;height:460px;color:#828695">Loading chart...</div></div>
+  </div>
+
+  <div class="grid">
+    <!-- Positions -->
+    <div class="card">
+      <div class="card-title">Open Positions</div>
+      <table>
+        <thead><tr><th>Symbol</th><th>Qty</th><th>Avg Cost</th><th>Price</th><th>P&L</th><th>Stop / Target</th></tr></thead>
+        <tbody id="positionsBody">
+          <tr><td colspan="6" style="color:#828695;text-align:center;padding:1.5rem">No open positions</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <!-- Risk panel -->
+    <div class="card">
+      <div class="card-title">Risk Monitor</div>
+      <table>
+        <thead><tr><th>Metric</th><th>Value</th></tr></thead>
+        <tbody id="riskBody"></tbody>
+      </table>
+    </div>
+  </div>
+
+  <div class="bottom-grid">
+    <!-- Demand zones -->
+    <div class="card">
+      <div class="card-title">🟣 Demand Zones <span style="color:#c084fc" id="demandCount"></span></div>
+      <table>
+        <thead><tr><th>S1 Level</th><th>Zone Range</th><th>Height</th><th>Status</th></tr></thead>
+        <tbody id="demandZones">
+          <tr><td colspan="4" style="color:#828695;text-align:center;padding:1rem">Detecting zones...</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <!-- Supply zones -->
+    <div class="card">
+      <div class="card-title">🟡 Supply Zones <span style="color:#fbbf24" id="supplyCount"></span></div>
+      <table>
+        <thead><tr><th>S1 Level</th><th>Zone Range</th><th>Height</th><th>Status</th></tr></thead>
+        <tbody id="supplyZones">
+          <tr><td colspan="4" style="color:#828695;text-align:center;padding:1rem">Detecting zones...</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+</main>
+
+<script>
+// ── Init ──────────────────────────────────────────────────────────────────────
+const socket = io();
+const $ = id => document.getElementById(id);
+const fmt  = (n,d=2) => n!=null ? '$'+parseFloat(n).toLocaleString('en-US',{minimumFractionDigits:d,maximumFractionDigits:d}) : '—';
+const fmtP = n => n!=null ? (n>=0?'+':'')+parseFloat(n).toFixed(2)+'%' : '—';
+const cls  = n => n>=0 ? 'up' : 'down';
+
+// Symbols from server
+const SYMBOLS = {{ symbols|tojson }};
+let activeSymbol = SYMBOLS[0] || 'SPY';
+let chartData = null;
+
+// Build symbol tabs
+const tabsEl = $('symbolTabs');
+SYMBOLS.forEach(sym => {
+  const btn = document.createElement('button');
+  btn.className = 'sym-tab' + (sym === activeSymbol ? ' active' : '');
+  btn.textContent = sym.trim();
+  btn.onclick = () => {
+    activeSymbol = sym.trim();
+    document.querySelectorAll('.sym-tab').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    refreshChart();
+  };
+  tabsEl.appendChild(btn);
+});
+
+// ── WebSocket updates ─────────────────────────────────────────────────────────
+socket.on('connect',    () => $('statusBar').textContent = 'Connected — live');
+socket.on('disconnect', () => $('statusBar').textContent = 'Disconnected — reconnecting...');
+
+socket.on('update', data => {
+  $('statusBar').textContent = 'Updated ' + new Date().toLocaleTimeString();
+
+  const a = data.account || {};
+  $('m-equity').textContent    = fmt(a.equity);
+  $('m-cash').textContent      = fmt(a.cash);
+
+  const r = data.risk || {};
+  const pnl = r.total_pnl || 0;
+  const unr = r.total_unrealized_pnl || 0;
+  $('m-pnl').textContent       = fmt(pnl);
+  $('m-pnl').className         = 'metric-val ' + cls(pnl);
+  $('m-unrealized').textContent= fmt(unr);
+  $('m-unrealized').className  = 'metric-val ' + cls(unr);
+  $('m-positions').textContent = r.open_positions ?? '—';
+  $('m-trades').textContent    = r.trade_count_today ?? '—';
+
+  // Halt banner
+  if (r.trading_halted) {
+    $('haltedBanner').style.display = 'block';
+    $('haltReason').textContent = r.halt_reason || '';
+  } else {
+    $('haltedBanner').style.display = 'none';
+  }
+
+  // Positions table
+  const positions = r.positions || [];
+  $('positionsBody').innerHTML = positions.length
+    ? positions.map(p => `
+        <tr>
+          <td><strong>${p.symbol}</strong></td>
+          <td>${p.qty}</td>
+          <td>${fmt(p.avg_cost)}</td>
+          <td>${fmt(p.current_price)}</td>
+          <td class="${cls(p.unrealized_pnl)}">${fmt(p.unrealized_pnl)}<br>
+              <span style="font-size:10px">${fmtP(p.unrealized_pnl_pct)}</span></td>
+          <td style="font-size:11px">
+            <span class="down">SL ${fmt(p.stop_loss)}</span><br>
+            <span class="up">TP ${fmt(p.take_profit)}</span>
+          </td>
+        </tr>`).join('')
+    : '<tr><td colspan="6" style="color:#828695;text-align:center;padding:1rem">No open positions</td></tr>';
+
+  // Risk table
+  $('riskBody').innerHTML = [
+    ['Daily Realized P&L', `<span class="${cls(r.daily_realized_pnl)}">${fmt(r.daily_realized_pnl)}</span>`],
+    ['Open Positions',     `${r.open_positions ?? 0} / 5`],
+    ['Trades Today',       r.trade_count_today ?? 0],
+    ['Status',             r.trading_halted
+      ? '<span class="down">🛑 HALTED</span>'
+      : '<span class="up">✅ ACTIVE</span>'],
+  ].map(([k,v]) => `<tr><td style="color:#828695">${k}</td><td>${v}</td></tr>`).join('');
+});
+
+// ── Chart ─────────────────────────────────────────────────────────────────────
+async function refreshChart() {
+  const n = $('barsSelect').value;
+  try {
+    const res  = await fetch(`/api/chart/${activeSymbol}?n=${n}`);
+    chartData  = await res.json();
+    drawChart(chartData);
+    updateZoneTables(chartData);
+    updateZoneCounts(chartData);
+  } catch(e) {
+    console.error('Chart load error:', e);
+  }
+}
+
+function drawChart(data) {
+  const bars   = data.bars || [];
+  const demand = data.demand_zones || [];
+  const supply = data.supply_zones || [];
+
+  if (!bars.length) {
+    $('chartDiv').innerHTML = '<div style="display:flex;align-items:center;justify-content:center;height:460px;color:#828695">Waiting for price data — market must be open</div>';
+    return;
+  }
+
+  const timestamps = bars.map(b => b.timestamp);
+  const t0 = timestamps[0];
+  const t1 = timestamps[timestamps.length - 1];
+
+  // ── Candlestick trace ─────────────────────────────────────────────────────
+  const candlestick = {
+    type: 'candlestick',
+    x:     timestamps,
+    open:  bars.map(b => b.open),
+    high:  bars.map(b => b.high),
+    low:   bars.map(b => b.low),
+    close: bars.map(b => b.close),
+    name:  activeSymbol,
+    increasing: { line: { color: '#3dd38e' }, fillcolor: '#1a3d2e' },
+    decreasing: { line: { color: '#ff6b63' }, fillcolor: '#3a1d1c' },
+  };
+
+  // ── Zone shapes (rectangles) ──────────────────────────────────────────────
+  const shapes = [];
+  const annotations = [];
+
+  // Demand zones — purple boxes
+  demand.forEach(z => {
+    const isActive = z.active;
+    shapes.push({
+      type: 'rect',
+      xref: 'x', yref: 'y',
+      x0: t0, x1: t1,
+      y0: z.bot, y1: z.top,
+      fillcolor: isActive ? 'rgba(124,58,237,0.15)' : 'rgba(124,58,237,0.04)',
+      line: {
+        color: isActive ? '#7c3aed' : 'rgba(124,58,237,0.25)',
+        width: isActive ? 1.5 : 1,
+        dash: isActive ? 'solid' : 'dot',
+      },
+    });
+    // S1 line inside box
+    shapes.push({
+      type: 'line',
+      xref: 'x', yref: 'y',
+      x0: t0, x1: t1,
+      y0: z.s1, y1: z.s1,
+      line: { color: isActive ? '#c084fc' : 'rgba(192,132,252,0.3)', width: 1, dash: 'dash' },
+    });
+    // Label
+    annotations.push({
+      x: t1, y: z.s1,
+      xref: 'x', yref: 'y',
+      text: `D ${z.s1}`,
+      showarrow: false,
+      font: { size: 10, color: isActive ? '#c084fc' : '#828695' },
+      xanchor: 'right',
+      bgcolor: 'rgba(15,17,23,0.7)',
+    });
+  });
+
+  // Supply zones — yellow/amber boxes
+  supply.forEach(z => {
+    const isActive = z.active;
+    shapes.push({
+      type: 'rect',
+      xref: 'x', yref: 'y',
+      x0: t0, x1: t1,
+      y0: z.bot, y1: z.top,
+      fillcolor: isActive ? 'rgba(217,119,6,0.15)' : 'rgba(217,119,6,0.04)',
+      line: {
+        color: isActive ? '#d97706' : 'rgba(217,119,6,0.25)',
+        width: isActive ? 1.5 : 1,
+        dash: isActive ? 'solid' : 'dot',
+      },
+    });
+    // S1 line inside box
+    shapes.push({
+      type: 'line',
+      xref: 'x', yref: 'y',
+      x0: t0, x1: t1,
+      y0: z.s1, y1: z.s1,
+      line: { color: isActive ? '#fbbf24' : 'rgba(251,191,36,0.3)', width: 1, dash: 'dash' },
+    });
+    annotations.push({
+      x: t1, y: z.s1,
+      xref: 'x', yref: 'y',
+      text: `S ${z.s1}`,
+      showarrow: false,
+      font: { size: 10, color: isActive ? '#fbbf24' : '#828695' },
+      xanchor: 'right',
+      bgcolor: 'rgba(15,17,23,0.7)',
+    });
+  });
+
+  // Current price line
+  if (data.current_price) {
+    shapes.push({
+      type: 'line',
+      xref: 'paper', yref: 'y',
+      x0: 0, x1: 1,
+      y0: data.current_price, y1: data.current_price,
+      line: { color: '#ffffff', width: 1, dash: 'dot' },
+    });
+    annotations.push({
+      x: 1, y: data.current_price,
+      xref: 'paper', yref: 'y',
+      text: ` ${data.current_price} `,
+      showarrow: false,
+      font: { size: 11, color: '#ffffff' },
+      bgcolor: '#378ADD',
+      xanchor: 'right',
+    });
+  }
+
+  // ── Layout ────────────────────────────────────────────────────────────────
+  const layout = {
+    paper_bgcolor: '#1e2029',
+    plot_bgcolor:  '#1e2029',
+    font: { color: '#828695', size: 11 },
+    margin: { l: 60, r: 80, t: 20, b: 40 },
+    xaxis: {
+      type: 'category',
+      rangeslider: { visible: false },
+      gridcolor: '#2d3139',
+      tickfont: { size: 10 },
+      nticks: 12,
+    },
+    yaxis: {
+      gridcolor: '#2d3139',
+      tickfont: { size: 10 },
+      tickprefix: '$',
+    },
+    shapes,
+    annotations,
+    showlegend: false,
+    hovermode: 'x unified',
+  };
+
+  Plotly.newPlot('chartDiv', [candlestick], layout, {
+    responsive: true,
+    displayModeBar: true,
+    modeBarButtonsToRemove: ['lasso2d','select2d','autoScale2d'],
+    displaylogo: false,
+  });
+}
+
+// ── Zone tables ───────────────────────────────────────────────────────────────
+function updateZoneTables(data) {
+  const fmtZone = (zones, type) => {
+    if (!zones.length) return `<tr><td colspan="4" style="color:#828695;text-align:center;padding:1rem">No ${type} zones detected yet</td></tr>`;
+    return zones.slice(0,10).map(z => {
+      const badge = z.active
+        ? `<span class="zone-badge ${type === 'demand' ? 'zone-demand' : 'zone-supply'}">${type === 'demand' ? '🟣 Active' : '🟡 Active'}</span>`
+        : `<span class="zone-badge zone-hit">Hit ×${z.hit_count}</span>`;
+      return `<tr>
+        <td><strong>$${z.s1}</strong></td>
+        <td style="font-size:11px;color:#828695">$${z.bot} – $${z.top}</td>
+        <td style="font-size:11px;color:#828695">${z.height_pct}%</td>
+        <td>${badge}</td>
+      </tr>`;
+    }).join('');
+  };
+
+  $('demandZones').innerHTML = fmtZone(data.demand_zones || [], 'demand');
+  $('supplyZones').innerHTML = fmtZone(data.supply_zones || [], 'supply');
+}
+
+function updateZoneCounts(data) {
+  const activeD = (data.demand_zones||[]).filter(z=>z.active).length;
+  const activeS = (data.supply_zones||[]).filter(z=>z.active).length;
+  $('m-demand').textContent = activeD;
+  $('m-supply').textContent = activeS;
+  $('demandCount').textContent = `(${activeD} active / ${(data.demand_zones||[]).length} total)`;
+  $('supplyCount').textContent = `(${activeS} active / ${(data.supply_zones||[]).length} total)`;
+}
+
+// ── Controls ──────────────────────────────────────────────────────────────────
+function haltTrading(){
+  if(confirm('Halt all trading?'))
+    fetch('/api/halt',{method:'POST'}).then(()=>alert('Trading halted'));
+}
+function resumeTrading(){
+  fetch('/api/resume',{method:'POST'}).then(()=>alert('Trading resumed'));
+}
+function liquidateAll(){
+  if(confirm('⚠️ EMERGENCY LIQUIDATE ALL POSITIONS? Cannot be undone.'))
+    fetch('/api/liquidate',{method:'POST'}).then(()=>alert('All positions liquidated'));
+}
+
+// ── Auto refresh ──────────────────────────────────────────────────────────────
+refreshChart();
+setInterval(refreshChart, 60000);   // refresh chart every 60 seconds
+</script>
+
+</body>
+</html>

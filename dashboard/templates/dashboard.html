@@ -1,0 +1,229 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Algo Trader Dashboard</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.7.2/socket.io.js"></script>
+<script src="https://cdn.plot.ly/plotly-2.27.0.min.js"></script>
+<style>
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#0f1117;color:#f0f1f5;font-size:14px}
+  header{background:#1a1d23;border-bottom:1px solid #2d3139;padding:0 1.5rem;display:flex;align-items:center;justify-content:space-between;height:56px}
+  .brand{font-size:16px;font-weight:600;display:flex;align-items:center;gap:8px}
+  .live-dot{width:8px;height:8px;border-radius:50%;background:#1f9d6f;animation:pulse 2s infinite}
+  @keyframes pulse{0%,100%{opacity:1}50%{opacity:.4}}
+  .status-bar{font-size:12px;color:#828695}
+  main{max-width:1200px;margin:0 auto;padding:1.5rem}
+  .metrics{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:12px;margin-bottom:1.5rem}
+  .metric{background:#1e2029;border:1px solid #333644;border-radius:10px;padding:1rem}
+  .metric-label{font-size:11px;color:#828695;text-transform:uppercase;letter-spacing:.05em;margin-bottom:4px}
+  .metric-val{font-size:22px;font-weight:600}
+  .metric-val.up{color:#3dd38e}
+  .metric-val.down{color:#ff6b63}
+  .metric-val.neutral{color:#f0f1f5}
+  .grid2{display:grid;grid-template-columns:1fr 1fr;gap:1rem;margin-bottom:1rem}
+  .card{background:#1e2029;border:1px solid #333644;border-radius:10px;padding:1.25rem}
+  .card-title{font-size:12px;font-weight:600;color:#828695;text-transform:uppercase;letter-spacing:.05em;margin-bottom:1rem}
+  table{width:100%;border-collapse:collapse;font-size:13px}
+  th{font-size:11px;color:#828695;text-transform:uppercase;letter-spacing:.04em;padding:6px 0;border-bottom:1px solid #333644;text-align:left;font-weight:500}
+  td{padding:10px 0;border-bottom:1px solid #262834;vertical-align:middle}
+  tr:last-child td{border-bottom:none}
+  .badge{display:inline-block;padding:3px 8px;border-radius:99px;font-size:11px;font-weight:600}
+  .badge-buy{background:#0a2e20;color:#3dd38e}
+  .badge-sell{background:#3a1d1c;color:#ff6b63}
+  .badge-hold{background:#262834;color:#828695}
+  .up{color:#3dd38e}
+  .down{color:#ff6b63}
+  .controls{display:flex;gap:8px;margin-bottom:1.5rem;flex-wrap:wrap}
+  .btn{padding:8px 18px;border-radius:8px;border:1px solid #454857;background:#262834;color:#f0f1f5;font-size:13px;font-weight:500;cursor:pointer}
+  .btn:hover{background:#333644}
+  .btn-danger{border-color:#ff6b63;color:#ff6b63}
+  .btn-danger:hover{background:#3a1d1c}
+  .btn-warning{border-color:#f0c349;color:#f0c349}
+  .btn-warning:hover{background:#3a2f12}
+  .btn-success{border-color:#3dd38e;color:#3dd38e}
+  .btn-success:hover{background:#0a2e20}
+  .halted-banner{background:#3a1d1c;border:1px solid #ff6b63;border-radius:8px;padding:12px 16px;color:#ff6b63;font-weight:500;margin-bottom:1rem;display:none}
+  .price-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(120px,1fr));gap:8px}
+  .price-tile{background:#262834;border-radius:8px;padding:10px 14px}
+  .price-symbol{font-size:12px;color:#828695;font-weight:600}
+  .price-val{font-size:18px;font-weight:600;margin-top:2px}
+  #chartDiv{height:260px}
+  .full-width{grid-column:1/-1}
+</style>
+</head>
+<body>
+
+<header>
+  <div class="brand">
+    <div class="live-dot"></div>
+    🤖 Algo Trader
+  </div>
+  <div class="status-bar" id="statusBar">Connecting...</div>
+</header>
+
+<main>
+  <div class="halted-banner" id="haltedBanner">
+    ⚠️ Trading Halted — <span id="haltReason"></span>
+  </div>
+
+  <div class="controls">
+    <button class="btn btn-danger" onclick="haltTrading()">🛑 Halt Trading</button>
+    <button class="btn btn-success" onclick="resumeTrading()">▶ Resume Trading</button>
+    <button class="btn btn-warning" onclick="liquidateAll()">⚡ Emergency Liquidate All</button>
+  </div>
+
+  <div class="metrics" id="metrics">
+    <div class="metric"><div class="metric-label">Portfolio Value</div><div class="metric-val neutral" id="m-equity">—</div></div>
+    <div class="metric"><div class="metric-label">Cash Available</div><div class="metric-val neutral" id="m-cash">—</div></div>
+    <div class="metric"><div class="metric-label">Today's P&L</div><div class="metric-val neutral" id="m-pnl">—</div></div>
+    <div class="metric"><div class="metric-label">Open Positions</div><div class="metric-val neutral" id="m-positions">—</div></div>
+    <div class="metric"><div class="metric-label">Trades Today</div><div class="metric-val neutral" id="m-trades">—</div></div>
+    <div class="metric"><div class="metric-label">Unrealized P&L</div><div class="metric-val neutral" id="m-unrealized">—</div></div>
+  </div>
+
+  <div class="card" style="margin-bottom:1rem">
+    <div class="card-title">Live Prices</div>
+    <div class="price-grid" id="priceGrid"></div>
+  </div>
+
+  <div class="grid2">
+    <div class="card">
+      <div class="card-title">Open Positions</div>
+      <table>
+        <thead>
+          <tr><th>Symbol</th><th>Qty</th><th>Avg Cost</th><th>Price</th><th>P&L</th><th>SL / TP</th></tr>
+        </thead>
+        <tbody id="positionsBody">
+          <tr><td colspan="6" style="color:#828695;text-align:center;padding:1.5rem">No open positions</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="card">
+      <div class="card-title">Risk Monitor</div>
+      <table>
+        <thead><tr><th>Metric</th><th>Value</th></tr></thead>
+        <tbody id="riskBody"></tbody>
+      </table>
+    </div>
+  </div>
+
+  <div class="card full-width" style="margin-top:1rem">
+    <div class="card-title" style="display:flex;justify-content:space-between">
+      <span>Supply & Demand Zones</span>
+      <button class="btn" style="padding:4px 10px;font-size:11px" onclick="loadZones()">Refresh</button>
+    </div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:1rem">
+      <div>
+        <p style="font-size:11px;color:#3dd38e;font-weight:600;margin-bottom:8px">🟢 DEMAND ZONES (Buy)</p>
+        <table><thead><tr><th>Level (S1)</th><th>Zone</th><th>Status</th></tr></thead>
+        <tbody id="demandZones"><tr><td colspan="3" style="color:#828695;text-align:center">Loading...</td></tr></tbody></table>
+      </div>
+      <div>
+        <p style="font-size:11px;color:#ff6b63;font-weight:600;margin-bottom:8px">🔴 SUPPLY ZONES (Sell)</p>
+        <table><thead><tr><th>Level (S1)</th><th>Zone</th><th>Status</th></tr></thead>
+        <tbody id="supplyZones"><tr><td colspan="3" style="color:#828695;text-align:center">Loading...</td></tr></tbody></table>
+      </div>
+    </div>
+  </div>
+
+</main>
+
+<script>
+const socket = io();
+const $ = id => document.getElementById(id);
+const fmt = (n, d=2) => n != null ? '$' + parseFloat(n).toLocaleString('en-US', {minimumFractionDigits:d,maximumFractionDigits:d}) : '—';
+const fmtPct = n => n != null ? (n >= 0 ? '+' : '') + parseFloat(n).toFixed(2) + '%' : '—';
+const cls = n => n >= 0 ? 'up' : 'down';
+
+socket.on('connect', () => $('statusBar').textContent = 'Connected — live');
+socket.on('disconnect', () => $('statusBar').textContent = 'Disconnected — reconnecting...');
+
+socket.on('update', data => {
+  $('statusBar').textContent = 'Updated ' + new Date().toLocaleTimeString();
+
+  const a = data.account || {};
+  $('m-equity').textContent = fmt(a.equity);
+  $('m-cash').textContent = fmt(a.cash);
+
+  const r = data.risk || {};
+  const pnl = r.total_pnl || 0;
+  $('m-pnl').textContent = fmt(pnl);
+  $('m-pnl').className = 'metric-val ' + (pnl >= 0 ? 'up' : 'down');
+  $('m-positions').textContent = r.open_positions ?? '—';
+  $('m-trades').textContent = r.trade_count_today ?? '—';
+
+  const unrealized = r.total_unrealized_pnl || 0;
+  $('m-unrealized').textContent = fmt(unrealized);
+  $('m-unrealized').className = 'metric-val ' + (unrealized >= 0 ? 'up' : 'down');
+
+  // Halt banner
+  if (r.trading_halted) {
+    $('haltedBanner').style.display = 'block';
+    $('haltReason').textContent = r.halt_reason || '';
+  } else {
+    $('haltedBanner').style.display = 'none';
+  }
+
+  // Live prices
+  const prices = data.prices || {};
+  $('priceGrid').innerHTML = Object.entries(prices).map(([sym, price]) => `
+    <div class="price-tile">
+      <div class="price-symbol">${sym}</div>
+      <div class="price-val">${fmt(price)}</div>
+    </div>`).join('');
+
+  // Positions table
+  const positions = r.positions || [];
+  $('positionsBody').innerHTML = positions.length
+    ? positions.map(p => `
+      <tr>
+        <td><strong>${p.symbol}</strong><br><span style="font-size:11px;color:#828695">${p.strategy}</span></td>
+        <td>${p.qty}</td>
+        <td>${fmt(p.avg_cost)}</td>
+        <td>${fmt(p.current_price)}</td>
+        <td class="${cls(p.unrealized_pnl)}">${fmt(p.unrealized_pnl)}<br><span style="font-size:11px">${fmtPct(p.unrealized_pnl_pct)}</span></td>
+        <td style="font-size:12px"><span class="down">SL ${fmt(p.stop_loss)}</span><br><span class="up">TP ${fmt(p.take_profit)}</span></td>
+      </tr>`).join('')
+    : '<tr><td colspan="6" style="color:#828695;text-align:center;padding:1.5rem">No open positions</td></tr>';
+
+  // Risk table
+  $('riskBody').innerHTML = [
+    ['Daily P&L', `<span class="${cls(r.daily_realized_pnl)}">${fmt(r.daily_realized_pnl)}</span>`],
+    ['Open Positions', r.open_positions + ' / 5'],
+    ['Trading Status', r.trading_halted ? '<span class="down">HALTED</span>' : '<span class="up">ACTIVE</span>'],
+    ['Trades Today', r.trade_count_today ?? 0],
+  ].map(([k, v]) => `<tr><td style="color:#828695">${k}</td><td>${v}</td></tr>`).join('');
+});
+
+function loadZones(){
+  fetch('/api/zones').then(r=>r.json()).then(data=>{
+    const fmtZ = zones => zones.length
+      ? zones.map(z=>`<tr>
+          <td><strong>$${z.s1}</strong></td>
+          <td style="font-size:12px">$${z.bot} – $${z.top}<br><span style="color:#828695">${z.height_pct?.toFixed(2)}%</span></td>
+          <td>${z.active ? '<span class="up">Active</span>' : '<span style="color:#828695">Hit</span>'}</td>
+        </tr>`).join('')
+      : '<tr><td colspan="3" style="color:#828695;text-align:center;padding:1rem">None detected</td></tr>';
+    $('demandZones').innerHTML = fmtZ(data.demand || []);
+    $('supplyZones').innerHTML = fmtZ(data.supply || []);
+  }).catch(()=>{});
+}
+loadZones();
+setInterval(loadZones, 60000);
+
+function haltTrading(){
+  if(confirm('Halt all trading?')) fetch('/api/halt',{method:'POST'}).then(()=>alert('Trading halted'));
+}
+function resumeTrading(){
+  fetch('/api/resume',{method:'POST'}).then(()=>alert('Trading resumed'));
+}
+function liquidateAll(){
+  if(confirm('⚠️ EMERGENCY LIQUIDATE ALL POSITIONS? This cannot be undone.'))
+    fetch('/api/liquidate',{method:'POST'}).then(()=>alert('All positions liquidated'));
+}
+</script>
+</body>
+</html>
