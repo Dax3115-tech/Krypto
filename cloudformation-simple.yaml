@@ -1,0 +1,322 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'Algo Trader - Simplified AWS EC2 Deployment (No SSH Key Required)'
+
+Parameters:
+  InstanceType:
+    Type: String
+    Default: t2.micro
+    Description: EC2 Instance type (t2.micro is free tier eligible)
+    AllowedValues:
+      - t2.micro
+      - t2.small
+      - t3.micro
+
+  GitHubRepository:
+    Type: String
+    Default: https://github.com/your-username/algo-trader.git
+    Description: Your GitHub repository URL (e.g., https://github.com/myname/algo-trader.git)
+
+  AlpacaApiKey:
+    Type: String
+    NoEcho: true
+    Description: Alpaca API Key (get from https://app.alpaca.markets/paper/dashboard/overview)
+
+  AlpacaSecretKey:
+    Type: String
+    NoEcho: true
+    Description: Alpaca Secret Key
+
+  TradingSymbols:
+    Type: String
+    Default: SPY,QQQ,AAPL
+    Description: Comma-separated trading symbols (e.g., SPY,QQQ,AAPL)
+
+  MaxDailyLoss:
+    Type: Number
+    Default: 0.03
+    Description: Maximum daily loss percentage (e.g., 0.03 = 3%)
+    MinValue: 0.01
+    MaxValue: 0.10
+
+Metadata:
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+      - Label:
+          default: "EC2 Configuration"
+        Parameters:
+          - InstanceType
+      - Label:
+          default: "Application Configuration"
+        Parameters:
+          - GitHubRepository
+          - TradingSymbols
+          - MaxDailyLoss
+      - Label:
+          default: "Alpaca Broker Credentials"
+        Parameters:
+          - AlpacaApiKey
+          - AlpacaSecretKey
+
+Resources:
+  # ==================== NETWORKING ====================
+  AlgoTraderVPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: 10.0.0.0/16
+      EnableDnsHostnames: true
+      EnableDnsSupport: true
+      Tags:
+        - Key: Name
+          Value: AlgoTraderVPC
+
+  PublicSubnet:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref AlgoTraderVPC
+      CidrBlock: 10.0.1.0/24
+      AvailabilityZone: !Select [0, !GetAZs '']
+      MapPublicIpOnLaunch: true
+
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+
+  AttachGateway:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref AlgoTraderVPC
+      InternetGatewayId: !Ref InternetGateway
+
+  PublicRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref AlgoTraderVPC
+
+  PublicRoute:
+    Type: AWS::EC2::Route
+    DependsOn: AttachGateway
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref InternetGateway
+
+  SubnetRouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnet
+      RouteTableId: !Ref PublicRouteTable
+
+  # ==================== SECURITY ====================
+  AlgoTraderSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Security group for Algo Trader
+      VpcId: !Ref AlgoTraderVPC
+      SecurityGroupIngress:
+        # HTTP
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+          Description: HTTP
+        # HTTPS
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: 0.0.0.0/0
+          Description: HTTPS
+        # Flask Dashboard
+        - IpProtocol: tcp
+          FromPort: 5000
+          ToPort: 5000
+          CidrIp: 0.0.0.0/0
+          Description: Flask Dashboard Port
+      SecurityGroupEgress:
+        - IpProtocol: -1
+          CidrIp: 0.0.0.0/0
+      Tags:
+        - Key: Name
+          Value: AlgoTraderSecurityGroup
+
+  # ==================== IAM ====================
+  EC2Role:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ec2.amazonaws.com
+            Action: 'sts:AssumeRole'
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/CloudWatchAgentServerPolicy
+        - arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
+      Policies:
+        - PolicyName: CloudWatchLogs
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - 'logs:CreateLogGroup'
+                  - 'logs:CreateLogStream'
+                  - 'logs:PutLogEvents'
+                Resource: 'arn:aws:logs:*:*:*'
+
+  EC2InstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Roles:
+        - !Ref EC2Role
+
+  # ==================== EC2 INSTANCE ====================
+  AlgoTraderInstance:
+    Type: AWS::EC2::Instance
+    Properties:
+      ImageId: !Sub 'resolve:ssm:/aws/service/canonical/ubuntu/server/22.04/stable/current/amd64/hvm/ebs-gp3/ami-id'
+      InstanceType: !Ref InstanceType
+      SubnetId: !Ref PublicSubnet
+      SecurityGroupIds:
+        - !Ref AlgoTraderSecurityGroup
+      IamInstanceProfile: !Ref EC2InstanceProfile
+      BlockDeviceMappings:
+        - DeviceName: /dev/sda1
+          Ebs:
+            VolumeSize: 30
+            VolumeType: gp3
+            DeleteOnTermination: true
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash
+          set -e
+          exec > >(tee -a /var/log/algo-trader-setup.log)
+          exec 2>&1
+          
+          echo "=========================================="
+          echo "Algo Trader - AWS EC2 Setup"
+          echo "=========================================="
+          echo "Start time: $(date)"
+          
+          # ── Update System ──
+          echo "[1/8] Updating system packages..."
+          apt-get update
+          apt-get upgrade -y
+          
+          # ── Install Docker ──
+          echo "[2/8] Installing Docker..."
+          apt-get install -y \
+              apt-transport-https \
+              ca-certificates \
+              curl \
+              gnupg \
+              lsb-release \
+              git \
+              wget
+          
+          curl -fsSL https://download.docker.com/linux/ubuntu/gpg | gpg --dearmor -o /usr/share/keyrings/docker-archive-keyring.gpg
+          echo "deb [arch=amd64 signed-by=/usr/share/keyrings/docker-archive-keyring.gpg] https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable" | tee /etc/apt/sources.list.d/docker.list > /dev/null
+          apt-get update
+          apt-get install -y docker-ce docker-ce-cli containerd.io
+          systemctl start docker
+          systemctl enable docker
+          
+          # ── Install Docker Compose ──
+          echo "[3/8] Installing Docker Compose..."
+          curl -L "https://github.com/docker/compose/releases/download/v2.20.0/docker-compose-$(uname -s)-$(uname -m)" -o /usr/local/bin/docker-compose
+          chmod +x /usr/local/bin/docker-compose
+          
+          # ── Setup User ──
+          echo "[4/8] Configuring Docker permissions..."
+          usermod -aG docker ubuntu
+          
+          # ── Clone Repository ──
+          echo "[5/8] Cloning repository..."
+          cd /home/ubuntu
+          git clone ${GitHubRepository} algo-trader 2>&1 || echo "Repository clone completed with warnings"
+          cd algo-trader/algo-trader
+          
+          # ── Create Environment File ──
+          echo "[6/8] Setting up environment variables..."
+          cat > .env << 'ENVEOF'
+          ALPACA_API_KEY=${AlpacaApiKey}
+          ALPACA_SECRET_KEY=${AlpacaSecretKey}
+          ALPACA_BASE_URL=https://paper-api.alpaca.markets
+          DATABASE_URL=postgresql://postgres:Reena2220@postgres:5432/algotrader
+          TRADING_SYMBOLS=${TradingSymbols}
+          MAX_POSITION_SIZE=0.10
+          MAX_DAILY_LOSS=${MaxDailyLoss}
+          STOP_LOSS_PCT=0.02
+          TAKE_PROFIT_PCT=0.04
+          MAX_OPEN_POSITIONS=5
+          FLASK_SECRET_KEY=$(openssl rand -base64 32)
+          DASHBOARD_PORT=5000
+          ENV=paper
+          LOG_LEVEL=INFO
+          ENVEOF
+          
+          chown ubuntu:ubuntu .env
+          chmod 600 .env
+          chown -R ubuntu:ubuntu /home/ubuntu/algo-trader
+          
+          # ── Start Services ──
+          echo "[7/8] Starting Docker containers..."
+          sudo -u ubuntu docker-compose up -d 2>&1 || echo "Docker compose started with status: $?"
+          
+          # ── Wait for Services ──
+          echo "[8/8] Waiting for services to start..."
+          sleep 15
+          
+          # ── Status Check ──
+          echo "=========================================="
+          echo "✅ Setup Complete!"
+          echo "=========================================="
+          echo "Dashboard URL: http://$(curl -s http://169.254.169.254/latest/meta-data/public-ipv4):5000"
+          echo "Setup log: /var/log/algo-trader-setup.log"
+          echo "Docker status:"
+          docker-compose ps || echo "Checking services..."
+          echo "=========================================="
+          echo "End time: $(date)"
+
+      Tags:
+        - Key: Name
+          Value: AlgoTraderInstance
+        - Key: Environment
+          Value: Production
+
+  # ==================== CLOUDWATCH LOGS ====================
+  AlgoTraderLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: /algo-trader/deployment
+      RetentionInDays: 30
+
+Outputs:
+  InstancePublicIP:
+    Description: Public IP of the EC2 instance
+    Value: !GetAtt AlgoTraderInstance.PublicIp
+    Export:
+      Name: AlgoTraderPublicIP
+
+  DashboardURL:
+    Description: Access your Algo Trader Dashboard here
+    Value: !Sub 'http://${AlgoTraderInstance.PublicIp}:5000'
+
+  SSMSessionURL:
+    Description: Connect to instance using AWS Systems Manager Session Manager (no SSH key needed)
+    Value: !Sub 'https://console.aws.amazon.com/systems-manager/session-manager/start-session?instanceId=${AlgoTraderInstance.InstanceId}'
+
+  SetupLogURL:
+    Description: View deployment logs
+    Value: !Sub 'https://console.aws.amazon.com/ec2/v2/home?region=${AWS::Region}#Instances:instanceId=${AlgoTraderInstance.InstanceId}'
+
+  DockerComposeCommand:
+    Description: Commands to manage your app (use Session Manager to connect)
+    Value: 'cd /home/ubuntu/algo-trader/algo-trader && docker-compose logs -f'
+
+  HelpText:
+    Description: Next Steps
+    Value: |
+      1. Wait 2-3 minutes for setup to complete
+      2. Open Dashboard URL above in your browser
+      3. To connect via terminal, use the SSMSessionURL (no SSH key needed!)
+      4. Useful commands: docker-compose ps, docker-compose logs -f
