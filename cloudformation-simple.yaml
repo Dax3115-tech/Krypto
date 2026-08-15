@@ -313,14 +313,6 @@ Resources:
         - Key: Environment
           Value: Production
 
-  # ==================== CLOUDWATCH LOGS ====================
-  AlgoTraderLogGroup:
-    Type: AWS::Logs::LogGroup
-    DeletionPolicy: Retain
-    Properties:
-      LogGroupName: /algo-trader/deployment
-      RetentionInDays: 30
-
 Outputs:
   InstancePublicIP:
     Description: Public IP of the EC2 instance
