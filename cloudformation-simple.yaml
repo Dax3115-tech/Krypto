@@ -288,7 +288,7 @@ Resources:
           echo "[5/8] Cloning repository..."
           cd /home/ubuntu
           git clone ${GitHubRepository} algo-trader 2>&1 || echo "Repository clone completed with warnings"
-          cd algo-trader/algo-trader
+          cd algo-trader
           
           # ── Create Environment File ──
           echo "[6/8] Setting up environment variables..."
@@ -359,7 +359,7 @@ Outputs:
 
   DockerComposeCommand:
     Description: Commands to manage your app (use Session Manager to connect)
-    Value: 'cd /home/ubuntu/algo-trader/algo-trader && docker-compose logs -f'
+    Value: 'cd /home/ubuntu/algo-trader && docker-compose logs -f'
 
   HelpText:
     Description: Next Steps
