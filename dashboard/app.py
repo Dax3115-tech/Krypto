@@ -61,6 +61,11 @@ def index():
                            symbols=os.getenv("TRADING_SYMBOLS", "SPY,QQQ").split(","))
 
 
+@app.route("/health")
+def health():
+    return jsonify({"status": "ok"})
+
+
 @app.route("/api/account")
 def api_account():
     if not _broker:
