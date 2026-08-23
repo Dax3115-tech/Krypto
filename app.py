@@ -60,6 +60,9 @@ def index():
     return render_template("dashboard.html",
                            symbols=os.getenv("TRADING_SYMBOLS", "SPY,QQQ").split(","))
 
+@app.route("/health")
+def health():
+    return jsonify({"status": "ok"}), 200
 
 @app.route("/api/account")
 def api_account():
@@ -218,4 +221,5 @@ def on_connect():
 
 
 def run_dashboard(host="0.0.0.0", port=5000, debug=False):
-    socketio.run(app, host=host, port=port, debug=debug, use_reloader=False)
+    # socketio.run(app, host=host, port=port, debug=debug, use_reloader=False)
+    socketio.run(app, host=host, port=port, debug=debug, use_reloader=False, allow_unsafe_werkzeug=True)
