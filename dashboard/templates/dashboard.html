@@ -49,7 +49,11 @@
   .price-tile{background:#262834;border-radius:8px;padding:10px 14px}
   .price-symbol{font-size:12px;color:#828695;font-weight:600}
   .price-val{font-size:18px;font-weight:600;margin-top:2px}
-  #chartDiv{height:260px}
+  .chart-controls{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:12px}
+  .chart-input,.chart-select{background:#262834;color:#f0f1f5;border:1px solid #454857;border-radius:6px;padding:8px 10px;font-size:13px}
+  .chart-input{width:130px;text-transform:uppercase}
+  #chartDiv{height:360px}
+  .chart-message{color:#828695;font-size:13px;padding:1rem 0}
   .full-width{grid-column:1/-1}
 </style>
 </head>
@@ -74,6 +78,11 @@
     <button class="btn btn-warning" onclick="liquidateAll()">⚡ Emergency Liquidate All</button>
   </div>
 
+  <div class="card" style="margin-bottom:1rem">
+    <div class="card-title">Algorithms</div>
+    <div id="strategyControls" class="controls" style="margin-bottom:0"></div>
+  </div>
+
   <div class="metrics" id="metrics">
     <div class="metric"><div class="metric-label">Portfolio Value</div><div class="metric-val neutral" id="m-equity">—</div></div>
     <div class="metric"><div class="metric-label">Cash Available</div><div class="metric-val neutral" id="m-cash">—</div></div>
@@ -86,6 +95,24 @@
   <div class="card" style="margin-bottom:1rem">
     <div class="card-title">Live Prices</div>
     <div class="price-grid" id="priceGrid"></div>
+  </div>
+
+  <div class="card" style="margin-bottom:1rem">
+    <div class="card-title">Price History</div>
+    <div class="chart-controls">
+      <input class="chart-input" id="tickerInput" value="SPY" maxlength="12" placeholder="Ticker" aria-label="Stock ticker">
+      <select class="chart-select" id="historyRange" aria-label="History range">
+        <option value="1d">1 day</option>
+        <option value="5d">5 days</option>
+        <option value="1mo" selected>1 month</option>
+        <option value="3mo">3 months</option>
+        <option value="6mo">6 months</option>
+        <option value="1y">1 year</option>
+      </select>
+      <button class="btn" onclick="loadHistory()">Load chart</button>
+    </div>
+    <div id="chartMessage" class="chart-message">Enter a ticker to load historical candles.</div>
+    <div id="chartDiv"></div>
   </div>
 
   <div class="grid2">
@@ -211,7 +238,72 @@ function loadZones(){
     $('supplyZones').innerHTML = fmtZ(data.supply || []);
   }).catch(()=>{});
 }
+
+function formatStrategyName(name){
+  return name.replaceAll('_', ' ').replace(/\b\w/g, letter => letter.toUpperCase());
+}
+
+function loadStrategies(){
+  fetch('/api/strategies').then(response => response.json()).then(strategies => {
+    $('strategyControls').innerHTML = Object.entries(strategies).map(([name, state]) => `
+      <label style="display:flex;align-items:center;gap:8px;color:#f0f1f5">
+        <input type="checkbox" ${state.enabled ? 'checked' : ''} onchange="toggleStrategy('${name}', this.checked)">
+        ${formatStrategyName(name)}
+      </label>`).join('');
+  }).catch(()=>{});
+}
+
+function toggleStrategy(name, enabled){
+  fetch(`/api/strategies/${encodeURIComponent(name)}`, {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({enabled})
+  }).then(response => {
+    if (!response.ok) throw new Error('Unable to update strategy');
+  }).catch(() => loadStrategies());
+}
+
+function loadHistory(){
+  const ticker = $('tickerInput').value.trim().toUpperCase();
+  const range = $('historyRange').value;
+  if (!/^[A-Z0-9.\-]{1,12}$/.test(ticker)) {
+    $('chartMessage').textContent = 'Enter a valid ticker symbol.';
+    return;
+  }
+  $('chartMessage').textContent = 'Loading historical data...';
+  fetch(`/api/history/${encodeURIComponent(ticker)}?range=${range}`)
+    .then(response => response.json().then(data => ({ok: response.ok, data})))
+    .then(({ok, data}) => {
+      if (!ok || !data.bars?.length) throw new Error(data.error || 'No data found.');
+      const bars = data.bars;
+      Plotly.react('chartDiv', [{
+        x: bars.map(bar => bar.timestamp),
+        open: bars.map(bar => bar.open),
+        high: bars.map(bar => bar.high),
+        low: bars.map(bar => bar.low),
+        close: bars.map(bar => bar.close),
+        type: 'candlestick',
+        increasing: {line: {color: '#3dd38e'}},
+        decreasing: {line: {color: '#ff6b63'}}
+      }], {
+        margin: {t: 10, r: 10, b: 40, l: 50},
+        paper_bgcolor: '#1e2029', plot_bgcolor: '#1e2029',
+        font: {color: '#f0f1f5'},
+        xaxis: {rangeslider: {visible: false}, gridcolor: '#333644'},
+        yaxis: {gridcolor: '#333644', fixedrange: false}
+      }, {responsive: true, displaylogo: false});
+      $('chartMessage').textContent = `${data.symbol} · ${bars.length} daily candles`;
+    })
+    .catch(error => {
+      $('chartMessage').textContent = error.message;
+      Plotly.purge('chartDiv');
+    });
+}
+
+$('tickerInput').addEventListener('keydown', event => {
+  if (event.key === 'Enter') loadHistory();
+});
 loadZones();
+loadStrategies();
 setInterval(loadZones, 60000);
 
 function haltTrading(){

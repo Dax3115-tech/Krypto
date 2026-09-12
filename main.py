@@ -26,6 +26,8 @@ load_dotenv()
 from data.database import init_db, save_signal, save_trade, save_sd_zone, deactivate_sd_zone
 from data.feed import start_feed, price_cache
 from strategies.supply_demand import SupplyDemandStrategy
+from strategies.momentum import MomentumStrategy
+from strategies.mean_reversion import MeanReversionStrategy
 from risk.manager import RiskManager, RiskConfig
 from execution.broker import AlpacaBroker
 from dashboard.app import init_dashboard, run_dashboard, emit_update, socketio
@@ -47,6 +49,11 @@ logger.add(LOG_FILE, rotation="1 day", retention="30 days",
 broker: AlpacaBroker = None
 risk_manager: RiskManager = None
 strategies = {}
+strategy_enabled = {
+    "supply_demand": True,
+    "momentum_ma_rsi": False,
+    "mean_reversion_bb_rsi": False,
+}
 _running = True
 
 
@@ -87,6 +94,8 @@ def run_strategies():
 
         # Run both strategies, use whichever fires first
         for strategy_name, strategy in strategies.items():
+            if not strategy_enabled.get(strategy_name, False):
+                continue
             signal = strategy.generate_signal(symbol, df)
 
             if signal is None:
@@ -268,6 +277,8 @@ def main():
             alerts_pc_near=1.5,
             max_zones=100,
         ),
+        "momentum_ma_rsi": MomentumStrategy(),
+        "mean_reversion_bb_rsi": MeanReversionStrategy(),
     }
     logger.info(f"Strategies loaded: {list(strategies.keys())}")
 
@@ -278,11 +289,12 @@ def main():
     time.sleep(30)
 
     # 6. Dashboard
-    logger.info(f"Starting dashboard on port {os.getenv('DASHBOARD_PORT', 5000)}...")
-    init_dashboard(risk_manager, broker, price_cache, strategies)
+    dashboard_port = int(os.getenv("PORT", os.getenv("DASHBOARD_PORT", 5000)))
+    logger.info(f"Starting dashboard on port {dashboard_port}...")
+    init_dashboard(risk_manager, broker, price_cache, strategies, strategy_enabled)
     dashboard_thread = threading.Thread(
         target=run_dashboard,
-        kwargs={"host": "0.0.0.0", "port": int(os.getenv("DASHBOARD_PORT", 5000))},
+        kwargs={"host": "0.0.0.0", "port": dashboard_port},
         daemon=True,
         name="Dashboard"
     )

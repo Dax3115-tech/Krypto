@@ -6,6 +6,7 @@ Shows: portfolio value, open positions, P&L, signals, live prices, trade log.
 
 import os
 import json
+import re
 from datetime import datetime, timedelta
 from flask import Flask, render_template, jsonify, request
 from flask_socketio import SocketIO, emit
@@ -16,18 +17,22 @@ _risk_manager = None
 _broker = None
 _price_cache = None
 _strategies = {}
+_strategy_enabled = {}
 
 app = Flask(__name__)
 app.secret_key = os.getenv("FLASK_SECRET_KEY", "dev-secret-change-me")
 socketio = SocketIO(app, cors_allowed_origins="*")
 
 
-def init_dashboard(risk_manager, broker, price_cache, strategies):
-    global _risk_manager, _broker, _price_cache, _strategies
+def init_dashboard(risk_manager, broker, price_cache, strategies, strategy_enabled=None):
+    global _risk_manager, _broker, _price_cache, _strategies, _strategy_enabled
     _risk_manager = risk_manager
     _broker = broker
     _price_cache = price_cache
     _strategies = strategies
+    _strategy_enabled = strategy_enabled if strategy_enabled is not None else {
+        name: True for name in strategies
+    }
 
 
 def emit_update():
@@ -71,6 +76,26 @@ def api_account():
     if not _broker:
         return jsonify({"error": "Broker not connected"})
     return jsonify(_broker.get_account())
+
+
+@app.route("/api/strategies")
+def api_strategies():
+    return jsonify({
+        name: {"enabled": bool(_strategy_enabled.get(name, False))}
+        for name in _strategies
+    })
+
+
+@app.route("/api/strategies/<name>", methods=["POST"])
+def api_strategy_toggle(name):
+    if name not in _strategies:
+        return jsonify({"error": "Unknown strategy"}), 404
+    payload = request.get_json(silent=True) or {}
+    if not isinstance(payload.get("enabled"), bool):
+        return jsonify({"error": "enabled must be a boolean"}), 400
+    _strategy_enabled[name] = payload["enabled"]
+    logger.info(f"Strategy {name} {'enabled' if payload['enabled'] else 'disabled'}")
+    return jsonify({"name": name, "enabled": _strategy_enabled[name]})
 
 
 @app.route("/api/positions")
@@ -127,6 +152,44 @@ def api_bars(symbol):
     df = df.reset_index()
     df["timestamp"] = df["timestamp"].astype(str)
     return jsonify(df.to_dict("records"))
+
+
+@app.route("/api/history/<symbol>")
+def api_history(symbol):
+    symbol = symbol.strip().upper()
+    if not re.fullmatch(r"[A-Z0-9.\-]{1,12}", symbol):
+        return jsonify({"error": "Invalid ticker symbol"}), 400
+
+    range_name = request.args.get("range", "1mo")
+    periods = {"1d": "1d", "5d": "5d", "1mo": "1mo", "3mo": "3mo", "6mo": "6mo", "1y": "1y"}
+    period = periods.get(range_name)
+    if not period:
+        return jsonify({"error": "Unsupported history range"}), 400
+
+    try:
+        import yfinance as yf
+        frame = yf.download(symbol, period=period, interval="1d", auto_adjust=False,
+                             progress=False, threads=False)
+        if frame.empty:
+            return jsonify({"symbol": symbol, "bars": []})
+        if hasattr(frame.columns, "levels"):
+            frame.columns = frame.columns.get_level_values(0)
+        frame = frame.reset_index()
+        timestamp_column = "Date" if "Date" in frame else "Datetime"
+        bars = []
+        for row in frame.to_dict("records"):
+            bars.append({
+                "timestamp": row[timestamp_column].isoformat(),
+                "open": float(row["Open"]),
+                "high": float(row["High"]),
+                "low": float(row["Low"]),
+                "close": float(row["Close"]),
+                "volume": int(row["Volume"]),
+            })
+        return jsonify({"symbol": symbol, "range": range_name, "bars": bars})
+    except Exception as exc:
+        logger.error(f"History request failed for {symbol}: {exc}")
+        return jsonify({"error": "Unable to load historical data"}), 502
 
 
 @app.route("/api/halt", methods=["POST"])
